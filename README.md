@@ -26,6 +26,23 @@ bam_depth/
 
 `mosdepth` and `bedtools` on `PATH`. The reference FASTA must have a `.fai` index next to it (`samtools faidx ref.fa`). Input is BAM only (no CRAM yet).
 
+### Installing mosdepth
+
+mosdepth is a compiled binary and is not on PyPI, so a plain Python venv (`pip install`) cannot install it. Two options:
+
+**Conda (recommended).** On c4, load the miniforge module (check `module avail miniforge` for the version), then create an env:
+
+```bash
+module load miniforge/<version>
+conda create -n bam_depth -c conda-forge -c bioconda mosdepth bedtools samtools
+conda activate bam_depth
+mosdepth --version
+```
+
+Activate the env in the wrapper before the call to `bam_depth.sh` (add `module load miniforge/<version>` and `conda activate bam_depth`), or activate it before running `bam_depth.sh` directly.
+
+**Static binary (no conda).** Download `mosdepth` from the [releases page](https://github.com/brentp/mosdepth/releases), `chmod +x` it, and put it somewhere on `PATH`. It has no dependencies.
+
 ## Config files
 
 Plain bash `KEY="value"` files that `bam_depth.sh` sources:
