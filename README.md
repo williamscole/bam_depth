@@ -59,7 +59,7 @@ Contigs in the BED that are not in the reference `.fai` are dropped. The script 
 ## Inputs
 
 - **BAM list**: text file, one BAM path per line.
-- **Sample ID**: BAM file name minus `.bam`.
+- **Sample ID**: derived from the BAM file name (minus `.bam`), so BAM file names should be unique across the list.
 - **Output dir**: per-sample results go to `<outdir>/tmp_depth/`; the summary goes to `<outdir>/depth_summary.tsv`.
 
 ## Running on c4
