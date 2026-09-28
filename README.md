@@ -13,13 +13,14 @@ Scripts live in `bam_depth/`. The earlier GeRI-specific scripts are kept for ref
 ## Layout
 
 ```
+configs/
+  c4_b37.config         reference + target paths for GRCh37 on c4
+  c4_b38.config         reference + target paths for GRCh38 on c4
 bam_depth/
   bam_depth.sh          main script (scheduler-agnostic)
   c4_wrapper.sh         SLURM array wrapper for the c4 cluster
   summarize_depth.sh    compile per-sample results into one table
-  configs/
-    c4_b37.config       reference + target paths for GRCh37 on c4
-    c4_b38.config       reference + target paths for GRCh38 on c4
+old_scripts/            earlier GeRI-specific scripts (not used)
 ```
 
 ## Requirements
@@ -72,10 +73,10 @@ mkdir -p logs
 N=$(wc -l < /path/to/bams.txt)
 
 # on- and off-target
-sbatch --array=1-${N}%100 c4_wrapper.sh configs/c4_b38.config /path/to/bams.txt /path/to/outdir
+sbatch --array=1-${N}%100 c4_wrapper.sh ../configs/c4_b38.config /path/to/bams.txt /path/to/outdir
 
 # on-target only
-sbatch --array=1-${N}%100 c4_wrapper.sh configs/c4_b38.config /path/to/bams.txt /path/to/outdir --on-target-only
+sbatch --array=1-${N}%100 c4_wrapper.sh ../configs/c4_b38.config /path/to/bams.txt /path/to/outdir --on-target-only
 
 # after the array finishes
 bash summarize_depth.sh /path/to/outdir
@@ -86,8 +87,8 @@ One array task processes one line of the BAM list. The wrapper's default resourc
 ## Running without SLURM
 
 ```bash
-bash bam_depth.sh --config configs/c4_b38.config --bam-list bams.txt --outdir out            # all BAMs, in turn
-bash bam_depth.sh --config configs/c4_b38.config --bam-list bams.txt --outdir out --line 3   # only line 3
+bash bam_depth.sh --config ../configs/c4_b38.config --bam-list bams.txt --outdir out            # all BAMs, in turn
+bash bam_depth.sh --config ../configs/c4_b38.config --bam-list bams.txt --outdir out --line 3   # only line 3
 bash summarize_depth.sh out
 ```
 

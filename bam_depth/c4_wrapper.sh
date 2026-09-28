@@ -11,7 +11,7 @@
 # c4 SLURM wrapper around bam_depth.sh. One array task = one line of the BAM list.
 #
 # Usage (from the bam_depth/bam_depth directory, after `mkdir -p logs`):
-#   sbatch --array=1-N%100 c4_wrapper.sh configs/c4_b38.config bams.txt /path/to/outdir [--on-target-only]
+#   sbatch --array=1-N%100 c4_wrapper.sh ../configs/c4_b38.config bams.txt /path/to/outdir [--on-target-only]
 #
 # Set the array range to the number of lines in the BAM list (wc -l bams.txt).
 # Then run:  bash summarize_depth.sh /path/to/outdir
