@@ -5,7 +5,7 @@
 # Usage:
 #   bam_depth.sh --config CONFIG --bam-list LIST --outdir DIR [--line N] [--on-target-only] [--threads T]
 #
-#   --config          bash config file (REF_FASTA, EXOME_TARGET_BED, STRIP_CHR, BUILD)
+#   --config          bash config file (REF_FASTA, EXOME_TARGET_BED, STRIP_CHR/ADD_CHR, BUILD)
 #   --bam-list        text file, one BAM path per line
 #   --outdir          results go to DIR/tmp_depth/ (summarize_depth.sh writes DIR/depth_summary.tsv)
 #   --line N          only process line N (1-based) of the BAM list (for array jobs).
@@ -42,7 +42,7 @@ if [[ -n $LINE ]]; then
 fi
 
 # ---- config ----
-STRIP_CHR="false"
+STRIP_CHR="false"; ADD_CHR="false"
 # shellcheck disable=SC1090
 source "$CONFIG"
 : "${BUILD:?BUILD not set in $CONFIG}"
@@ -51,6 +51,7 @@ source "$CONFIG"
 [[ -f $REF_FASTA ]]        || die "REF_FASTA not found: $REF_FASTA"
 [[ -f ${REF_FASTA}.fai ]]  || die "index not found: ${REF_FASTA}.fai (run: samtools faidx $REF_FASTA)"
 [[ -f $EXOME_TARGET_BED ]] || die "EXOME_TARGET_BED not found: $EXOME_TARGET_BED"
+[[ $STRIP_CHR == "true" && $ADD_CHR == "true" ]] && die "STRIP_CHR and ADD_CHR cannot both be true (check $CONFIG)"
 
 command -v mosdepth >/dev/null || die "mosdepth not on PATH"
 command -v bedtools >/dev/null || die "bedtools not on PATH"
@@ -79,11 +80,16 @@ if [[ $STRIP_CHR == "true" ]]; then
     mv "$WORK/on_nochr.bed" "$WORK/on_raw.bed"
 fi
 
+if [[ $ADD_CHR == "true" ]]; then
+    awk 'BEGIN{OFS="\t"} $1 !~ /^chr/ {$1="chr"$1} {print}' "$WORK/on_raw.bed" > "$WORK/on_chr.bed"
+    mv "$WORK/on_chr.bed" "$WORK/on_raw.bed"
+fi
+
 # keep only contigs present in the reference, then sort
 awk 'NR==FNR{ok[$1]=1; next} ($1 in ok)' "$WORK/valid_chroms.txt" "$WORK/on_raw.bed" \
     | sort -k1,1 -k2,2n > "$WORK/on_target.bed"
 
-[[ -s $WORK/on_target.bed ]] || die "no target regions left after filtering to reference contigs (check STRIP_CHR / build in $CONFIG)"
+[[ -s $WORK/on_target.bed ]] || die "no target regions left after filtering to reference contigs (check STRIP_CHR / ADD_CHR / REF_FASTA contig names in $CONFIG)"
 
 if [[ $ON_ONLY != "true" ]]; then
     bedtools complement -i "$WORK/on_target.bed" -g "$WORK/genome.txt" > "$WORK/off_target.bed"

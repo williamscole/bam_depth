@@ -54,6 +54,9 @@ Plain bash `KEY="value"` files that `bam_depth.sh` sources:
 | `REF_FASTA` | Reference FASTA (must have `.fai`) |
 | `EXOME_TARGET_BED` | Exome target BED, `.bed` or `.bed.gz` (first 3 columns used) |
 | `STRIP_CHR` | `true` if the BED has `chr`-prefixed contigs but the BAMs/reference do not (e.g. hg19 BED with b37 BAMs); default `false` |
+| `ADD_CHR` | `true` if the BED has no `chr` prefix (`1`, `2`, ...) but the BAMs/reference do (`chr1`, ...); default `false`. Cannot be combined with `STRIP_CHR` |
+
+`REF_FASTA` is used only for its `.fai` (contig names and lengths), so it must use the same contig names as the BAMs. Check with `samtools view -H sample.bam | grep '^@SQ' | head`.
 
 Contigs in the BED that are not in the reference `.fai` are dropped. The script errors if no target regions remain (usually a `STRIP_CHR` or build mismatch).
 
