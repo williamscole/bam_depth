@@ -104,6 +104,8 @@ bash summarize_depth.sh out
 | `--outdir DIR` | output directory (required) |
 | `--line N` | process only line N (1-based) of the list; omit to process all |
 | `--on-target-only` | skip the off-target run |
+| `--gene-bed FILE` | also compute mean depth per gene (see [Per-gene depth](#per-gene-depth)) |
+| `--gene-thresholds LIST` | with `--gene-bed`: depths N (comma-separated, default `10,20,30`) for the fraction of bases at ≥Nx; `none` to skip |
 | `--threads T` | mosdepth threads (default `$SLURM_CPUS_PER_TASK` or 2) |
 
 ## Output
@@ -120,6 +122,33 @@ bash summarize_depth.sh out
 | `mean_off` | `total_region` row of the off-target summary; `NA` if not computed |
 
 Each task rebuilds the on/off-target BEDs in its own scratch space (`$TMPDIR`, else `/tmp`), so parallel tasks never write to shared files.
+
+## Per-gene depth
+
+Pass `--gene-bed` to get the mean depth of each gene in each sample, e.g. from a canonical-transcript CDS BED:
+
+```
+1   69090   70008   OR4F5   0   +   ENSG00000186092   ENST00000335137   1
+```
+
+Columns used: 1-3 (chrom, start, end), 4 (gene symbol), and 7 (Ensembl gene ID, optional; `NA` if absent). One line per exon/CDS interval. The gene BED is separate from `EXOME_TARGET_BED`, uses the same `STRIP_CHR`/`ADD_CHR` handling, and intervals on contigs missing from the reference are dropped with a warning. The extra run costs about one more on-target mosdepth pass per BAM and works with or without `--on-target-only`.
+
+```bash
+sbatch --array=1-${N}%100 c4_wrapper.sh ../configs/c4_b37.config /path/to/bams.txt /path/to/outdir --on-target-only --gene-bed /path/to/genes.bed
+bash summarize_depth.sh /path/to/outdir
+```
+
+Gene depth is the length-weighted mean over the gene's intervals, `sum(mean_i * len_i) / sum(len_i)`. The coverage fractions are `sum(bases_i at >= Nx) / sum(len_i)`, i.e. the share of the gene's bases covered by at least N reads. Intervals are assumed non-overlapping within a gene (use one transcript per gene); overlapping intervals would be counted twice. Per-interval means from mosdepth are rounded to 2 decimals.
+
+Output: `<outdir>/tmp_depth/<sample>.gene_depth.tsv.gz` per sample, and after summarizing `<outdir>/gene_depth.tsv` (long format):
+
+| Column | Meaning |
+|---|---|
+| `sample_id` | BAM name minus `.bam` |
+| `gene`, `ensg` | gene symbol and Ensembl ID from the gene BED |
+| `n_bases` | total bases in the gene's intervals |
+| `mean_depth` | length-weighted mean depth |
+| `frac_10x`, `frac_20x`, `frac_30x` | fraction of the gene's bases covered at ≥10x / 20x / 30x (columns follow `--gene-thresholds`; absent with `none`) |
 
 ## Planned
 

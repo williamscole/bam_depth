@@ -3,7 +3,7 @@
 # bam_depth.sh - on-/off-target read depth with mosdepth.
 #
 # Usage:
-#   bam_depth.sh --config CONFIG --bam-list LIST --outdir DIR [--line N] [--on-target-only] [--threads T]
+#   bam_depth.sh --config CONFIG --bam-list LIST --outdir DIR [--line N] [--on-target-only] [--gene-bed BED [--gene-thresholds LIST]] [--threads T]
 #
 #   --config          bash config file (REF_FASTA, EXOME_TARGET_BED, STRIP_CHR/ADD_CHR, BUILD)
 #   --bam-list        text file, one BAM path per line
@@ -11,14 +11,19 @@
 #   --line N          only process line N (1-based) of the BAM list (for array jobs).
 #                     If omitted, every BAM in the list is processed in turn.
 #   --on-target-only  skip the off-target BED and off-target mosdepth run
+#   --gene-bed BED    also compute mean depth per gene. BED (.bed or .bed.gz) with one interval
+#                     per exon/CDS: chrom, start, end, gene [, ... , 7th col = Ensembl gene ID].
+#                     Writes DIR/tmp_depth/<sample>.gene_depth.tsv.gz. Independent of --on-target-only.
+#   --gene-thresholds LIST  with --gene-bed: comma-separated depths N for which to also report the
+#                     fraction of each gene's bases covered at >= Nx (default 10,20,30; 'none' = skip).
 #   --threads T       mosdepth threads (default: $SLURM_CPUS_PER_TASK or 2)
 
 set -euo pipefail
 
-usage() { sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'; }
 die()   { echo "Error: $*" >&2; exit 1; }
 
-CONFIG=""; BAM_LIST=""; OUTDIR=""; LINE=""; ON_ONLY="false"
+CONFIG=""; BAM_LIST=""; OUTDIR=""; LINE=""; ON_ONLY="false"; GENE_BED=""; GENE_THR="10,20,30"
 THREADS="${SLURM_CPUS_PER_TASK:-2}"
 
 while [[ $# -gt 0 ]]; do
@@ -29,6 +34,8 @@ while [[ $# -gt 0 ]]; do
         --line)           LINE="${2:-}";     shift 2 ;;
         --threads)        THREADS="${2:-}";  shift 2 ;;
         --on-target-only) ON_ONLY="true";    shift ;;
+        --gene-bed)       GENE_BED="${2:-}"; shift 2 ;;
+        --gene-thresholds) GENE_THR="${2:-}"; shift 2 ;;
         -h|--help)        usage; exit 0 ;;
         *)                usage; die "unknown argument: $1" ;;
     esac
@@ -37,6 +44,8 @@ done
 [[ -n $CONFIG && -n $BAM_LIST && -n $OUTDIR ]] || { usage; die "--config, --bam-list and --outdir are required"; }
 [[ -f $CONFIG ]]   || die "config not found: $CONFIG"
 [[ -f $BAM_LIST ]] || die "BAM list not found: $BAM_LIST"
+[[ -z $GENE_BED || -f $GENE_BED ]] || die "gene BED not found: $GENE_BED"
+[[ $GENE_THR == none || $GENE_THR =~ ^[0-9]+(,[0-9]+)*$ ]] || die "--gene-thresholds must be comma-separated integers (e.g. 10,20,30) or 'none', got '$GENE_THR'"
 if [[ -n $LINE ]]; then
     [[ $LINE =~ ^[1-9][0-9]*$ ]] || die "--line must be a positive integer, got '$LINE'"
 fi
@@ -91,6 +100,29 @@ awk 'NR==FNR{ok[$1]=1; next} ($1 in ok)' "$WORK/valid_chroms.txt" "$WORK/on_raw.
 
 [[ -s $WORK/on_target.bed ]] || die "no target regions left after filtering to reference contigs (check STRIP_CHR / ADD_CHR / REF_FASTA contig names in $CONFIG)"
 
+# gene intervals: 4-column BED (chrom, start, end, "gene|ENSG"), same contig handling as the target BED
+if [[ -n $GENE_BED ]]; then
+    if [[ $GENE_BED == *.gz ]]; then zcat "$GENE_BED"; else cat "$GENE_BED"; fi \
+        | awk -F'\t' -v OFS='\t' '
+            /^(#|track|browser)/ || NF == 0 {next}
+            NF < 4 {bad = 1; exit}
+            {key = $4; if (NF >= 7 && $7 != "") key = key "|" $7; print $1, $2, $3, key}
+            END {if (bad) exit 3}' > "$WORK/gene_raw.bed" \
+        || die "gene BED needs at least 4 tab-separated columns (chrom, start, end, gene): $GENE_BED"
+    if [[ $STRIP_CHR == "true" ]]; then
+        sed 's/^chr//' "$WORK/gene_raw.bed" > "$WORK/gene_nochr.bed"; mv "$WORK/gene_nochr.bed" "$WORK/gene_raw.bed"
+    fi
+    if [[ $ADD_CHR == "true" ]]; then
+        awk 'BEGIN{OFS="\t"} $1 !~ /^chr/ {$1="chr"$1} {print}' "$WORK/gene_raw.bed" > "$WORK/gene_chr.bed"
+        mv "$WORK/gene_chr.bed" "$WORK/gene_raw.bed"
+    fi
+    awk 'NR==FNR{ok[$1]=1; next} ($1 in ok)' "$WORK/valid_chroms.txt" "$WORK/gene_raw.bed" \
+        | sort -k1,1 -k2,2n > "$WORK/gene.bed"
+    [[ -s $WORK/gene.bed ]] || die "no gene regions left after filtering to reference contigs (check STRIP_CHR / ADD_CHR in $CONFIG)"
+    n_in=$(wc -l < "$WORK/gene_raw.bed"); n_kept=$(wc -l < "$WORK/gene.bed")
+    (( n_kept == n_in )) || echo "Warning: dropped $((n_in - n_kept)) of $n_in gene intervals on contigs not in the reference" >&2
+fi
+
 if [[ $ON_ONLY != "true" ]]; then
     bedtools complement -i "$WORK/on_target.bed" -g "$WORK/genome.txt" > "$WORK/off_target.bed"
 fi
@@ -110,6 +142,47 @@ process_bam() {
     if [[ $ON_ONLY != "true" ]]; then
         mosdepth -n -t "$THREADS" -b "$WORK/off_target.bed" "$WORK/${sample}_off" "$bam"
         cp "$WORK/${sample}_off.mosdepth.summary.txt" "$WORK/${sample}_off.mosdepth.global.dist.txt" "$RESULTS_DIR/"
+    fi
+
+    if [[ -n $GENE_BED ]]; then
+        local thr_args=()
+        if [[ $GENE_THR != none ]]; then
+            thr_args=(--thresholds "$GENE_THR")
+        else
+            printf '#chrom\tstart\tend\tregion\n' | gzip > "$WORK/${sample}_gene.thresholds.bed.gz"
+        fi
+        mosdepth -n -t "$THREADS" -b "$WORK/gene.bed" "${thr_args[@]}" "$WORK/${sample}_gene" "$bam"
+        # per-gene results, weighted by interval length:
+        #   mean_depth = sum(mean_i * len_i) / sum(len_i)      (mosdepth rounds mean_i to 2 decimals)
+        #   frac_Nx    = sum(bases_i at >= Nx) / sum(len_i)
+        # input 1: thresholds.bed.gz (header + bases >= N per interval); input 2: regions.bed.gz (mean per interval)
+        awk -F'\t' -v OFS='\t' '
+            FNR == 1 {f++}
+            f == 1 {
+                if ($0 ~ /^#/) {nt = NF - 4; for (i = 5; i <= NF; i++) tn[i - 4] = tolower($i); next}
+                k = $1 SUBSEP $2 SUBSEP $3 SUBSEP $4
+                for (i = 1; i <= nt; i++) thr[k, i] = $(i + 4)
+                next
+            }
+            {
+                len = $3 - $2; if (len <= 0) next
+                g = $4; bases[g] += len; cov[g] += $5 * len
+                k = $1 SUBSEP $2 SUBSEP $3 SUBSEP $4
+                for (i = 1; i <= nt; i++) tb[g, i] += thr[k, i]
+            }
+            END {
+                h = "gene\tensg\tn_bases\tmean_depth"
+                for (i = 1; i <= nt; i++) h = h "\tfrac_" tn[i]
+                print h
+                for (g in bases) {
+                    split(g, a, "|"); ensg = (a[2] == "" ? "NA" : a[2])
+                    line = sprintf("%s\t%s\t%d\t%.4f", a[1], ensg, bases[g], cov[g] / bases[g])
+                    for (i = 1; i <= nt; i++) line = line sprintf("\t%.4f", tb[g, i] / bases[g])
+                    print line
+                }
+            }' <(zcat "$WORK/${sample}_gene.thresholds.bed.gz") <(zcat "$WORK/${sample}_gene.regions.bed.gz") \
+            | { IFS= read -r header; echo "$header"; sort -k1,1 -k2,2; } \
+            | gzip > "$RESULTS_DIR/${sample}.gene_depth.tsv.gz"
     fi
 
     rm -f "$WORK/${sample}_"*

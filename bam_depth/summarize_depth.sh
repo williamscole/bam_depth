@@ -6,6 +6,9 @@
 #   Reads   OUTDIR/tmp_depth/*_on.mosdepth.summary.txt (and *_off... if present)
 #   Writes  OUTDIR/depth_summary.tsv  with columns: sample_id, mean_genome, mean_on, mean_off
 #   mean_off is NA for samples without an off-target result (e.g. --on-target-only runs).
+#   If any OUTDIR/tmp_depth/*.gene_depth.tsv.gz exist (runs with --gene-bed), also writes
+#   OUTDIR/gene_depth.tsv (long format): sample_id, gene, ensg, n_bases, mean_depth
+#   [, frac_10x, frac_20x, ... if thresholds were used].
 
 set -euo pipefail
 
@@ -41,3 +44,15 @@ done
 
 echo "Summary written: $summary_file"
 echo "Samples: $n (with off-target: $n_off)"
+
+# ---- per-gene table (only if bam_depth.sh was run with --gene-bed) ----
+gene_files=("$RESULTS_DIR"/*.gene_depth.tsv.gz)
+if (( ${#gene_files[@]} > 0 )); then
+    gene_file="$OUTDIR/gene_depth.tsv"
+    { printf 'sample_id\t'; zcat "${gene_files[0]}" | head -n 1; } > "$gene_file"
+    for f in "${gene_files[@]}"; do
+        base="$(basename "$f")"
+        zcat "$f" | awk -F'\t' -v OFS='\t' -v s="${base%.gene_depth.tsv.gz}" 'NR > 1 {print s, $0}' >> "$gene_file"
+    done
+    echo "Gene table written: $gene_file (samples: ${#gene_files[@]})"
+fi
