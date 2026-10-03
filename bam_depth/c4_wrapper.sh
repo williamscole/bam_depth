@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
-#SBATCH --time=00:20:00
+#SBATCH --time=00:40:00
 #SBATCH --output=logs/bam_depth_%A_%a.out
 #SBATCH --error=logs/bam_depth_%A_%a.err
 #
