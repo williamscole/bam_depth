@@ -20,6 +20,7 @@ bam_depth/
   bam_depth.sh          main script (scheduler-agnostic)
   c4_wrapper.sh         SLURM array wrapper for the c4 cluster
   summarize_depth.sh    compile per-sample results into one table
+  rank_gene_variability.py  rank genes by coverage variability across samples; optional batch-effect test
 old_scripts/            earlier GeRI-specific scripts (not used)
 ```
 
@@ -149,6 +150,26 @@ Output: `<outdir>/tmp_depth/<sample>.gene_depth.tsv.gz` per sample, and after su
 | `n_bases` | total bases in the gene's intervals |
 | `mean_depth` | length-weighted mean depth |
 | `frac_10x`, `frac_20x`, `frac_30x` | fraction of the gene's bases covered at ≥10x / 20x / 30x (columns follow `--gene-thresholds`; absent with `none`) |
+
+## Ranking genes by variability and batch effects
+
+`rank_gene_variability.py` is a standalone script (python3 with numpy, pandas, scipy) that reads `gene_depth.tsv` and ranks genes from most to least variable in coverage across samples:
+
+```bash
+python3 rank_gene_variability.py /path/to/outdir/gene_depth.tsv                        # variability only
+python3 rank_gene_variability.py /path/to/outdir/gene_depth.tsv --batch-map batches.tsv  # plus batch effects
+```
+
+It loads the whole table, so on ~1,000+ samples run it on a compute node, not the login node.
+
+**`gene_variability.tsv`**: one row per gene, ranked. `mean`, `sd`, `cv` are over samples of the raw metric. The `norm_*` columns are the same after rescaling each sample to the median sample's depth (the median gene depth in each sample sets its scale), so whole-sample depth differences don't make every gene look variable (use `--no-normalize` to turn this off). Columns also include the mean and sd of any `frac_*` columns. Genes are ranked by `--rank-by` (default `norm_cv`, i.e. sd/mean after normalization). Counting noise alone makes low-coverage genes have a high CV, so `cv_excess` (log CV minus the median log CV of genes with similar mean depth) is the better choice for finding genes that vary more than expected at their coverage level; use `--rank-by cv_excess` for that.
+
+**Batch effects** (with `--batch-map`): a two-column file, `sample_id` and `batch` (tab, comma or space separated, header optional; a trailing `.bam` on the sample name is ignored). `sample_id` must match the `sample_id` in the depth table. For each gene the script tests whether normalized coverage differs between batches:
+
+- `gene_batch_effects.tsv`: Kruskal-Wallis test (`kw_p`, `kw_fdr` = Benjamini-Hochberg), `eta2` / `eta2_adj` (fraction of the gene's variance explained by batch; adjusted for the number of batches), `fold_range` (highest / lowest batch mean), and the highest and lowest batches. Ranked by `eta2_adj`. `flag` is true when `kw_fdr < 0.05` and `eta2_adj >= 0.1` (`--fdr`, `--min-eta2`). With hundreds of samples nearly any gene gets a tiny p-value, so go by the effect size.
+- `gene_batch_means.tsv`: mean coverage of each gene in each batch, same order, for plotting.
+
+Batches with fewer than 3 samples are dropped (`--min-batch-size`), and samples missing from the map are excluded with a warning. The per-batch median sample depth is printed, since a batch-wide depth difference is removed by the normalization. A batch effect here means coverage differs by batch; if batch is confounded with something else (cohort, capture kit, ancestry), the script can't tell those apart.
 
 ## Planned
 
