@@ -49,7 +49,10 @@ echo "Samples: $n (with off-target: $n_off)"
 gene_files=("$RESULTS_DIR"/*.gene_depth.tsv.gz)
 if (( ${#gene_files[@]} > 0 )); then
     gene_file="$OUTDIR/gene_depth.tsv"
-    { printf 'sample_id\t'; zcat "${gene_files[0]}" | head -n 1; } > "$gene_file"
+    # read the header with `read` (not `head`): head closing the pipe early kills zcat with SIGPIPE,
+    # which under pipefail aborts the script
+    IFS= read -r gene_header < <(zcat "${gene_files[0]}")
+    printf 'sample_id\t%s\n' "$gene_header" > "$gene_file"
     for f in "${gene_files[@]}"; do
         base="$(basename "$f")"
         zcat "$f" | awk -F'\t' -v OFS='\t' -v s="${base%.gene_depth.tsv.gz}" 'NR > 1 {print s, $0}' >> "$gene_file"
