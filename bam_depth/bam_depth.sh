@@ -5,7 +5,7 @@
 # Usage:
 #   bam_depth.sh --config CONFIG --bam-list LIST --outdir DIR [--line N] [--on-target-only] [--gene-bed BED [--gene-thresholds LIST]] [--threads T]
 #
-#   --config          bash config file (REF_FASTA, EXOME_TARGET_BED, STRIP_CHR/ADD_CHR, BUILD)
+#   --config          bash config file (BUILD, EXOME_TARGET_BED)
 #   --bam-list        text file, one BAM path per line
 #   --outdir          results go to DIR/tmp_depth/ (summarize_depth.sh writes DIR/depth_summary.tsv)
 #   --line N          only process line N (1-based) of the BAM list (for array jobs).
@@ -51,19 +51,17 @@ if [[ -n $LINE ]]; then
 fi
 
 # ---- config ----
-STRIP_CHR="false"; ADD_CHR="false"
 # shellcheck disable=SC1090
 source "$CONFIG"
 : "${BUILD:?BUILD not set in $CONFIG}"
-: "${REF_FASTA:?REF_FASTA not set in $CONFIG}"
 : "${EXOME_TARGET_BED:?EXOME_TARGET_BED not set in $CONFIG}"
-[[ -f $REF_FASTA ]]        || die "REF_FASTA not found: $REF_FASTA"
-[[ -f ${REF_FASTA}.fai ]]  || die "index not found: ${REF_FASTA}.fai (run: samtools faidx $REF_FASTA)"
 [[ -f $EXOME_TARGET_BED ]] || die "EXOME_TARGET_BED not found: $EXOME_TARGET_BED"
-[[ $STRIP_CHR == "true" && $ADD_CHR == "true" ]] && die "STRIP_CHR and ADD_CHR cannot both be true (check $CONFIG)"
+# STRIP_CHR / ADD_CHR / REF_FASTA from older configs are no longer used: contig names and lengths
+# are taken from each BAM's own header (see prepare_regions).
 
 command -v mosdepth >/dev/null || die "mosdepth not on PATH"
 command -v bedtools >/dev/null || die "bedtools not on PATH"
+command -v samtools >/dev/null || die "samtools not on PATH"
 
 RESULTS_DIR="$OUTDIR/tmp_depth"
 mkdir -p "$RESULTS_DIR"
@@ -72,60 +70,69 @@ mkdir -p "$RESULTS_DIR"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/bam_depth.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
-# ---- build regions (rebuilt every run on purpose, so parallel tasks never clash) ----
 export LC_ALL=C
 
-cut -f1,2 "${REF_FASTA}.fai" | sort -k1,1 > "$WORK/genome.txt"
-cut -f1 "$WORK/genome.txt" > "$WORK/valid_chroms.txt"
+# ---- region files in a canonical contig style (no "chr" prefix, mitochondrion = MT) ----
+# Per BAM, these are renamed to that BAM's style, so a cohort can mix "1" and "chr1" BAMs.
+canon_contigs() { awk 'BEGIN{FS=OFS="\t"} {sub(/^chr/, "", $1); if ($1 == "M") $1 = "MT"; print}'; }
+read_bed()      { if [[ $1 == *.gz ]]; then zcat "$1"; else cat "$1"; fi; }
 
-if [[ $EXOME_TARGET_BED == *.gz ]]; then
-    zcat "$EXOME_TARGET_BED" | cut -f1-3 > "$WORK/on_raw.bed"
-else
-    cut -f1-3 "$EXOME_TARGET_BED" > "$WORK/on_raw.bed"
-fi
+read_bed "$EXOME_TARGET_BED" | awk -F'\t' -v OFS='\t' '/^(#|track|browser)/ || NF < 3 {next} {print $1, $2, $3}' \
+    | canon_contigs | sort -k1,1 -k2,2n > "$WORK/on_canon.bed"
+[[ -s $WORK/on_canon.bed ]] || die "no intervals read from EXOME_TARGET_BED: $EXOME_TARGET_BED"
 
-if [[ $STRIP_CHR == "true" ]]; then
-    sed 's/^chr//' "$WORK/on_raw.bed" > "$WORK/on_nochr.bed"
-    mv "$WORK/on_nochr.bed" "$WORK/on_raw.bed"
-fi
-
-if [[ $ADD_CHR == "true" ]]; then
-    awk 'BEGIN{OFS="\t"} $1 !~ /^chr/ {$1="chr"$1} {print}' "$WORK/on_raw.bed" > "$WORK/on_chr.bed"
-    mv "$WORK/on_chr.bed" "$WORK/on_raw.bed"
-fi
-
-# keep only contigs present in the reference, then sort
-awk 'NR==FNR{ok[$1]=1; next} ($1 in ok)' "$WORK/valid_chroms.txt" "$WORK/on_raw.bed" \
-    | sort -k1,1 -k2,2n > "$WORK/on_target.bed"
-
-[[ -s $WORK/on_target.bed ]] || die "no target regions left after filtering to reference contigs (check STRIP_CHR / ADD_CHR / REF_FASTA contig names in $CONFIG)"
-
-# gene intervals: 4-column BED (chrom, start, end, "gene|ENSG"), same contig handling as the target BED
+# gene intervals: 4-column BED (chrom, start, end, "gene|ENSG")
 if [[ -n $GENE_BED ]]; then
-    if [[ $GENE_BED == *.gz ]]; then zcat "$GENE_BED"; else cat "$GENE_BED"; fi \
+    read_bed "$GENE_BED" \
         | awk -F'\t' -v OFS='\t' '
             /^(#|track|browser)/ || NF == 0 {next}
             NF < 4 {bad = 1; exit}
             {key = $4; if (NF >= 7 && $7 != "") key = key "|" $7; print $1, $2, $3, key}
-            END {if (bad) exit 3}' > "$WORK/gene_raw.bed" \
+            END {if (bad) exit 3}' \
+        | canon_contigs | sort -k1,1 -k2,2n > "$WORK/gene_canon.bed" \
         || die "gene BED needs at least 4 tab-separated columns (chrom, start, end, gene): $GENE_BED"
-    if [[ $STRIP_CHR == "true" ]]; then
-        sed 's/^chr//' "$WORK/gene_raw.bed" > "$WORK/gene_nochr.bed"; mv "$WORK/gene_nochr.bed" "$WORK/gene_raw.bed"
-    fi
-    if [[ $ADD_CHR == "true" ]]; then
-        awk 'BEGIN{OFS="\t"} $1 !~ /^chr/ {$1="chr"$1} {print}' "$WORK/gene_raw.bed" > "$WORK/gene_chr.bed"
-        mv "$WORK/gene_chr.bed" "$WORK/gene_raw.bed"
-    fi
-    awk 'NR==FNR{ok[$1]=1; next} ($1 in ok)' "$WORK/valid_chroms.txt" "$WORK/gene_raw.bed" \
-        | sort -k1,1 -k2,2n > "$WORK/gene.bed"
-    [[ -s $WORK/gene.bed ]] || die "no gene regions left after filtering to reference contigs (check STRIP_CHR / ADD_CHR in $CONFIG)"
-    n_in=$(wc -l < "$WORK/gene_raw.bed"); n_kept=$(wc -l < "$WORK/gene.bed")
-    (( n_kept == n_in )) || echo "Warning: dropped $((n_in - n_kept)) of $n_in gene intervals on contigs not in the reference" >&2
+    [[ -s $WORK/gene_canon.bed ]] || die "no intervals read from gene BED: $GENE_BED"
 fi
 
-if [[ $ON_ONLY != "true" ]]; then
-    bedtools complement -i "$WORK/on_target.bed" -g "$WORK/genome.txt" > "$WORK/off_target.bed"
-fi
+# Rename canonical BED $1 to this BAM's contig style, keep only contigs present in the BAM header, write $2.
+# Needs BAM_STYLE and $WORK/bam_contigs.txt (set by prepare_regions).
+to_bam_style() {
+    awk -F'\t' -v OFS='\t' -v style="$BAM_STYLE" '
+        NR == FNR {ok[$1] = 1; next}
+        {c = $1; if (style == "chr") c = (c == "MT" ? "chrM" : "chr" c)
+         if (c in ok) {$1 = c; print}}' "$WORK/bam_contigs.txt" "$1" | sort -k1,1 -k2,2n > "$2"
+}
+
+# Per BAM: read contig names/lengths from the header, detect "chr" vs no-"chr" naming, and write
+# on_target.bed [, off_target.bed] [, gene.bed] in that BAM's naming.
+prepare_regions() {
+    local bam="$1" label="$2" n_in n_out
+    samtools view -H "$bam" | awk -F'\t' -v OFS='\t' '
+        $1 == "@SQ" {n = ""; l = ""
+            for (i = 2; i <= NF; i++) {if ($i ~ /^SN:/) n = substr($i, 4); else if ($i ~ /^LN:/) l = substr($i, 4)}
+            if (n != "" && l != "") print n, l}' | sort -k1,1 > "$WORK/bam_contigs.txt"
+    [[ -s $WORK/bam_contigs.txt ]] || die "$label: no @SQ lines in the BAM header (is it a BAM with a header?)"
+    if   awk '$1 == "chr1" {f = 1} END {exit !f}' "$WORK/bam_contigs.txt"; then BAM_STYLE="chr"
+    elif awk '$1 == "1"    {f = 1} END {exit !f}' "$WORK/bam_contigs.txt"; then BAM_STYLE="plain"
+    else die "$label: cannot tell the contig naming style; expected 1,2,... or chr1,chr2,... but the header starts with: $(head -n 3 "$WORK/bam_contigs.txt" | cut -f1 | paste -sd' ')"
+    fi
+
+    to_bam_style "$WORK/on_canon.bed" "$WORK/on_target.bed"
+    n_in=$(wc -l < "$WORK/on_canon.bed"); n_out=$(wc -l < "$WORK/on_target.bed")
+    [[ $n_out -gt 0 ]] || die "$label: none of the target regions are on contigs in the BAM header (naming: $BAM_STYLE)"
+    (( n_out == n_in )) || echo "Warning: $label: $((n_in - n_out)) of $n_in target intervals are on contigs not in the BAM header (skipped)" >&2
+
+    if [[ $ON_ONLY != "true" ]]; then
+        bedtools complement -i "$WORK/on_target.bed" -g "$WORK/bam_contigs.txt" > "$WORK/off_target.bed"
+    fi
+
+    if [[ -n $GENE_BED ]]; then
+        to_bam_style "$WORK/gene_canon.bed" "$WORK/gene.bed"
+        n_in=$(wc -l < "$WORK/gene_canon.bed"); n_out=$(wc -l < "$WORK/gene.bed")
+        [[ $n_out -gt 0 ]] || die "$label: none of the gene regions are on contigs in the BAM header (naming: $BAM_STYLE)"
+        (( n_out == n_in )) || echo "Warning: $label: $((n_in - n_out)) of $n_in gene intervals are on contigs not in the BAM header (skipped)" >&2
+    fi
+}
 
 # ---- per-BAM work ----
 process_bam() {
@@ -134,6 +141,8 @@ process_bam() {
     sample="$(basename "$bam" .bam)"
     echo "[$(date +%T)] Processing $sample ($bam)"
     local t0=$SECONDS
+    prepare_regions "$bam" "$sample"
+    echo "  contig naming: $BAM_STYLE"
 
     # -n: skip per-base output (not used downstream; much less I/O)
     mosdepth -n -t "$THREADS" -b "$WORK/on_target.bed" "$WORK/${sample}_on" "$bam"

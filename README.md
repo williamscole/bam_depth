@@ -14,8 +14,8 @@ Scripts live in `bam_depth/`. The earlier GeRI-specific scripts are kept for ref
 
 ```
 configs/
-  c4_b37.config         reference + target paths for GRCh37 on c4
-  c4_b38.config         reference + target paths for GRCh38 on c4
+  c4_b37.config         exome target BED for GRCh37 on c4
+  c4_b38.config         exome target BED for GRCh38 on c4
 bam_depth/
   bam_depth.sh          main script (scheduler-agnostic)
   c4_wrapper.sh         SLURM array wrapper for the c4 cluster
@@ -26,7 +26,7 @@ old_scripts/            earlier GeRI-specific scripts (not used)
 
 ## Requirements
 
-`mosdepth` and `bedtools` on `PATH`. The reference FASTA must have a `.fai` index next to it (`samtools faidx ref.fa`). Input is BAM only (no CRAM yet).
+`mosdepth`, `bedtools` and `samtools` on `PATH`. Input is BAM only (no CRAM yet).
 
 ### Installing mosdepth
 
@@ -52,14 +52,13 @@ Plain bash `KEY="value"` files that `bam_depth.sh` sources:
 | Key | Meaning |
 |---|---|
 | `BUILD` | Genome build label (`b37`, `b38`, ...) |
-| `REF_FASTA` | Reference FASTA (must have `.fai`) |
-| `EXOME_TARGET_BED` | Exome target BED, `.bed` or `.bed.gz` (first 3 columns used) |
-| `STRIP_CHR` | `true` if the BED has `chr`-prefixed contigs but the BAMs/reference do not (e.g. hg19 BED with b37 BAMs); default `false` |
-| `ADD_CHR` | `true` if the BED has no `chr` prefix (`1`, `2`, ...) but the BAMs/reference do (`chr1`, ...); default `false`. Cannot be combined with `STRIP_CHR` |
+| `EXOME_TARGET_BED` | Exome target BED, `.bed` or `.bed.gz` (first 3 columns used); contigs may be named `1` or `chr1` |
 
-`REF_FASTA` is used only for its `.fai` (contig names and lengths), so it must use the same contig names as the BAMs. Check with `samtools view -H sample.bam | grep '^@SQ' | head`.
+### Contig naming (`1` vs `chr1`)
 
-Contigs in the BED that are not in the reference `.fai` are dropped. The script errors if no target regions remain (usually a `STRIP_CHR` or build mismatch).
+Contig names and lengths come from each BAM's own header, so a cohort can mix BAMs named `1, 2, ... MT` and `chr1, chr2, ... chrM`. For each BAM the script detects which style it uses and renames the target BED, the off-target regions and the gene BED to match (`MT` and `chrM` are treated as the same contig). The BED files themselves can use either style. Intervals on contigs that are not in a BAM's header are skipped, with a warning in the log naming the sample and the count. The script stops with an error if none of the regions match, or if the header uses neither `1,2,...` nor `chr1,chr2,...`. The `[mosdepth] warning chromosome:... from bed ... not found` message should no longer appear; if it does, a BAM has contigs that the script did not rename.
+
+Older configs may still contain `REF_FASTA`, `STRIP_CHR` or `ADD_CHR`; they are ignored.
 
 ## Inputs
 
@@ -122,7 +121,7 @@ bash summarize_depth.sh out
 | `mean_on` | `total_region` row of the on-target summary |
 | `mean_off` | `total_region` row of the off-target summary; `NA` if not computed |
 
-Each task rebuilds the on/off-target BEDs in its own scratch space (`$TMPDIR`, else `/tmp`), so parallel tasks never write to shared files.
+Each task rebuilds the on/off-target BEDs for its BAM in its own scratch space (`$TMPDIR`, else `/tmp`), so parallel tasks never write to shared files.
 
 ## Per-gene depth
 
@@ -132,7 +131,7 @@ Pass `--gene-bed` to get the mean depth of each gene in each sample, e.g. from a
 1   69090   70008   OR4F5   0   +   ENSG00000186092   ENST00000335137   1
 ```
 
-Columns used: 1-3 (chrom, start, end), 4 (gene symbol), and 7 (Ensembl gene ID, optional; `NA` if absent). One line per exon/CDS interval. The gene BED is separate from `EXOME_TARGET_BED`, uses the same `STRIP_CHR`/`ADD_CHR` handling, and intervals on contigs missing from the reference are dropped with a warning. The extra run costs about one more on-target mosdepth pass per BAM and works with or without `--on-target-only`.
+Columns used: 1-3 (chrom, start, end), 4 (gene symbol), and 7 (Ensembl gene ID, optional; `NA` if absent). One line per exon/CDS interval. The gene BED is separate from `EXOME_TARGET_BED`, and its contig names are matched to each BAM automatically, like the capture BED (see [Contig naming](#contig-naming-1-vs-chr1)). The extra run costs about one more on-target mosdepth pass per BAM and works with or without `--on-target-only`.
 
 ```bash
 sbatch --array=1-${N}%100 c4_wrapper.sh ../configs/c4_b37.config /path/to/bams.txt /path/to/outdir --on-target-only --gene-bed /path/to/genes.bed
