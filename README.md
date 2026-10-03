@@ -19,7 +19,8 @@ configs/
 bam_depth/
   bam_depth.sh          main script (scheduler-agnostic)
   c4_wrapper.sh         SLURM array wrapper for the c4 cluster
-  summarize_depth.sh    compile per-sample results into one table
+  summarize_depth.sh    compile per-sample results into one table (also writes the gene tables)
+  gene_summary.py       one row per gene across samples (called by summarize_depth.sh)
   rank_gene_variability.py  rank genes by coverage variability across samples; optional batch-effect test
 old_scripts/            earlier GeRI-specific scripts (not used)
 ```
@@ -140,7 +141,7 @@ bash summarize_depth.sh /path/to/outdir
 
 Gene depth is the length-weighted mean over the gene's intervals, `sum(mean_i * len_i) / sum(len_i)`. The coverage fractions are `sum(bases_i at >= Nx) / sum(len_i)`, i.e. the share of the gene's bases covered by at least N reads. Intervals are assumed non-overlapping within a gene (use one transcript per gene); overlapping intervals would be counted twice. Per-interval means from mosdepth are rounded to 2 decimals.
 
-Output: `<outdir>/tmp_depth/<sample>.gene_depth.tsv.gz` per sample, and after summarizing `<outdir>/gene_depth.tsv` (long format):
+Output: `<outdir>/tmp_depth/<sample>.gene_depth.tsv.gz` per sample, and after summarizing two tables in `<outdir>`. `gene_depth.tsv` is in long format (one row per gene per sample):
 
 | Column | Meaning |
 |---|---|
@@ -149,6 +150,17 @@ Output: `<outdir>/tmp_depth/<sample>.gene_depth.tsv.gz` per sample, and after su
 | `n_bases` | total bases in the gene's intervals |
 | `mean_depth` | length-weighted mean depth |
 | `frac_10x`, `frac_20x`, `frac_30x` | fraction of the gene's bases covered at ≥10x / 20x / 30x (columns follow `--gene-thresholds`; absent with `none`) |
+
+`gene_summary.tsv` has one row per gene, summarized across samples (written by `gene_summary.py`, which needs python3 with pandas; if pandas is missing `summarize_depth.sh` skips it and prints the command to run later, and it can also be run on its own: `python3 gene_summary.py gene_depth.tsv gene_summary.tsv`):
+
+| Column | Meaning |
+|---|---|
+| `gene`, `ensg`, `n_bases` | gene symbol, Ensembl ID, bases in the gene's intervals |
+| `n_samples` | samples with a value for the gene |
+| `mean_depth`, `sd_depth`, `cv_depth` | mean, standard deviation (n-1) and sd/mean of the gene's mean depth across samples |
+| `median_depth`, `min_depth`, `max_depth` | median, minimum and maximum across samples |
+| `n_lt_1x`, `n_lt_10x` | number of samples where the gene's mean depth is below 1x / 10x (useful for spotting deletions and dropouts) |
+| `mean_frac_Nx`, `sd_frac_Nx` | mean and sd across samples of each `frac_Nx` column |
 
 ## Ranking genes by variability and batch effects
 

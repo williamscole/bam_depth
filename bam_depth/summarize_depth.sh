@@ -9,6 +9,8 @@
 #   If any OUTDIR/tmp_depth/*.gene_depth.tsv.gz exist (runs with --gene-bed), also writes
 #   OUTDIR/gene_depth.tsv (long format): sample_id, gene, ensg, n_bases, mean_depth
 #   [, frac_10x, frac_20x, ... if thresholds were used].
+#   and OUTDIR/gene_summary.tsv (via gene_summary.py): one row per gene across samples (n_samples, mean, sd,
+#   cv, median, min, max of mean_depth; samples below 1x / 10x; mean and sd of each frac_* column).
 
 set -euo pipefail
 
@@ -58,4 +60,14 @@ if (( ${#gene_files[@]} > 0 )); then
         zcat "$f" | awk -F'\t' -v OFS='\t' -v s="${base%.gene_depth.tsv.gz}" 'NR > 1 {print s, $0}' >> "$gene_file"
     done
     echo "Gene table written: $gene_file (samples: ${#gene_files[@]})"
+
+    # one row per gene across samples (mean, sd, cv, median, min, max, ...); needs python3 + pandas
+    summary_file="$OUTDIR/gene_summary.tsv"
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if python3 -c "import pandas" 2>/dev/null; then
+        python3 "$script_dir/gene_summary.py" "$gene_file" "$summary_file" \
+            || echo "Warning: gene_summary.py failed; gene_depth.tsv is still complete" >&2
+    else
+        echo "Note: python3 with pandas not found, skipped gene_summary.tsv (later: python3 $script_dir/gene_summary.py $gene_file $summary_file)" >&2
+    fi
 fi
